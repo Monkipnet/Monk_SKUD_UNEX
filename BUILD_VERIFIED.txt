@@ -222,3 +222,11 @@ v0.3.39 multi-controller discovery checks:
 - Existing nodes are refreshed; newly reported physical Node IDs are added and persisted.
 - Full-range scan is not performed on every background poll cycle.
 - Release CMake build: PASS.
+
+v0.3.40 MAG250 compact 20-row layout checks:
+- Project version: 0.3.40.
+- Portal cache revision: v=0340.
+- Compact topbar/table header layout enabled.
+- 18+ employee height-budget fitting enabled.
+- Active rows remain larger than left/absent/disabled rows.
+- Auto-scroll remains disabled.
