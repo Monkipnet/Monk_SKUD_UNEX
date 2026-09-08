@@ -240,3 +240,15 @@ v0.3.41 midnight attendance rollover checks:
 - No notifier call is made for automatic midnight departure.
 - Duplicate synthetic departure is detected on restart before append.
 - Startup calls rollover once before service threads; runtime loop checks once per second.
+
+v0.3.42 day-boundary/history checks:
+- Project version: 0.3.42.
+- CMake Release build: PASS.
+- Runtime file-backend fixture: 23:59:58 read followed by 00:00:01 read with a 5-second repeat window produced previous-day synthetic departure + new-day arrival; the 00:00:01 read was NOT accidental: PASS.
+- Previous-day synthetic departure timestamp equals 23:59:58 last physical read: PASS.
+- Historical rebuild script Python syntax: PASS.
+- Historical rebuild self-test: PASS (daily reset, first arrival, same-day accidental repeat, end-of-day synthetic departure).
+- Historical rebuild is NOT invoked from App startup/runtime.
+- Script default mode is preview; --yes requires monk-skud-unex stopped.
+- Script excludes current day and stores one-time marker attendance_history_daily_rebuild_v0342.
+

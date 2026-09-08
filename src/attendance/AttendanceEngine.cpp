@@ -10,6 +10,11 @@ namespace skud {
 namespace {
 std::string userStateKey(int id){return "U:"+std::to_string(id);}
 std::string cardStateKey(const std::string& card){return "C:"+card;}
+bool datePart(const std::string& timestamp,std::string& date){
+    if(timestamp.size()<10||timestamp[4]!='-'||timestamp[7]!='-')return false;
+    date=timestamp.substr(0,10);
+    return true;
+}
 }
 
 AttendanceEngine::AttendanceEngine(UserManager& users, FileStore& store, int repeat_seconds):users_(users),store_(store),repeat_seconds_(repeat_seconds){
@@ -62,8 +67,28 @@ AttendanceEngine::ControllerEventProcessResult AttendanceEngine::onControllerAcc
         if(user){e.user_id=user->id;e.user_name=user->last_name+" "+user->first_name;e.position=user->position;e.department=user->department;e.telegram_arrival=user->telegram_arrival;e.telegram_departure=user->telegram_departure;}else e.type=AttendanceEventType::UnknownCard;
         const std::string state_key=user?userStateKey(user->id):cardStateKey(card);
         auto& st=states_[state_key];
+
+        // A calendar-day boundary is also an attendance-session boundary.
+        // This is intentionally checked from the controller event timestamp,
+        // not from server processing time: a 23:59:59 read followed by a
+        // 00:00:01 read must become Departure(previous day) + Arrival(new day),
+        // even though the two reads are inside the accidental-repeat window.
+        std::string event_date,state_date;
+        const bool have_event_date=datePart(ts,event_date);
+        const bool have_state_date=datePart(st.last_read_text,state_date);
+        const bool new_calendar_day=user&&have_event_date&&have_state_date&&event_date>state_date;
+        if(new_calendar_day&&st.presence==PresenceState::Present){
+            bool rollover_changed=false;
+            if(!closePresentStateBeforeDateLocked(state_key,st,event_date,rollover_changed)){
+                result.event=e;result.stored=false;return result;
+            }
+            // Persist the day-close before accepting the new-day event. If the
+            // process stops here, restart recovery remains idempotent.
+            if(rollover_changed)persistLocked();
+        }
+
         bool accidental=false;
-        if(st.has_last&&event_time_ok){
+        if(!new_calendar_day&&st.has_last&&event_time_ok){
             const auto sec=std::chrono::duration_cast<std::chrono::seconds>(event_time-st.last_read).count();
             // Historical FIFO is drained much faster than real time.  Compare
             // controller event timestamps, not server processing speed.
@@ -125,88 +150,93 @@ std::vector<DailyAttendance> AttendanceEngine::todayAttendance()const{
 }
 
 
+bool AttendanceEngine::closePresentStateBeforeDateLocked(const std::string& key,State& st,const std::string& boundary_date,bool& changed){
+    changed=false;
+    if(st.presence!=PresenceState::Present)return true;
+
+    std::string event_date;
+    if(!datePart(st.last_read_text,event_date)){
+        // A legacy/corrupt present state without a usable last-read time cannot
+        // be assigned a truthful departure timestamp. Reset only the flag.
+        st.presence=PresenceState::Absent;
+        changed=true;
+        return true;
+    }
+    if(event_date>=boundary_date)return true;
+
+    std::optional<User> user;
+    std::string legacy_card;
+    if(key.rfind("U:",0)==0){
+        try{user=users_.byId(std::stoi(key.substr(2)));}catch(...){}
+    }else{
+        legacy_card=key.rfind("C:",0)==0?key.substr(2):key;
+        user=users_.byCard(legacy_card);
+    }
+
+    // Unknown cards never become Present in normal operation. If a legacy
+    // state survived without a matching user, reset it without inventing an
+    // attendance event for a non-existent employee.
+    if(!user){st.presence=PresenceState::Absent;changed=true;return true;}
+
+    AttendanceEvent e;
+    e.timestamp=st.last_read_text; // last physical card use = departure
+    e.type=AttendanceEventType::Departure;
+    e.user_id=user->id;
+    e.user_name=user->last_name+" "+user->first_name;
+    if(!user->middle_name.empty())e.user_name+=" "+user->middle_name;
+    e.position=user->position;
+    e.department=user->department;
+    e.telegram_arrival=user->telegram_arrival;
+    e.telegram_departure=user->telegram_departure;
+    e.controller_name="Автозакрытие дня 00:00";
+    e.raw_hex="AUTO_MIDNIGHT_RESET|U:"+std::to_string(user->id)+"|D:"+event_date;
+
+    // CardActivity is per physical card. Prefer a card read that is not newer
+    // than this state timestamp; this avoids borrowing controller/card data
+    // from a later day when old FIFO data is being processed.
+    const CardActivity* latest=nullptr;
+    for(const auto&[_,a]:activities_){
+        if(a.user_id!=user->id||a.last_read.empty()||a.last_read>st.last_read_text)continue;
+        if(!latest||a.last_read>latest->last_read)latest=&a;
+    }
+    if(latest){e.card=latest->card;e.controller_node=latest->controller_node;}
+    else if(!legacy_card.empty())e.card=legacy_card;
+    else if(!user->card.empty())e.card=user->card;
+
+    // Crash-safe idempotence: if the synthetic departure was already written
+    // but the state save did not finish, never append it a second time.
+    bool already_stored=false;
+    const auto prior=store_.loadAttendanceEventsByDate(event_date);
+    for(const auto&x:prior){
+        if(x.type==AttendanceEventType::Departure&&x.user_id==e.user_id&&
+           x.timestamp==e.timestamp&&x.raw_hex==e.raw_hex){already_stored=true;break;}
+    }
+    if(!already_stored&&!store_.appendEvent(e))return false;
+
+    st.presence=PresenceState::Absent;
+    changed=true;
+    for(auto&[_,a]:activities_){
+        if(a.user_id==user->id){
+            a.last_event="Уход (автосброс 00:00)";
+            // Keep a.last_read: it is the real last physical card-use time.
+        }
+    }
+    return true;
+}
+
 bool AttendanceEngine::processMidnightRollover(){
     const std::string today=util::todayLocal();
     bool all_ok=true;
-    bool changed=false;
+    bool any_changed=false;
     std::lock_guard lk(mu_);
 
     for(auto&[key,st]:states_){
-        if(st.presence!=PresenceState::Present)continue;
-        if(st.last_read_text.size()<10||st.last_read_text[4]!='-'||st.last_read_text[7]!='-'){
-            // A legacy/corrupt present state without a usable last-read time
-            // cannot be assigned a truthful departure timestamp. Reset the
-            // presence flag only so it cannot leak into the new workday.
-            st.presence=PresenceState::Absent;
-            changed=true;
-            continue;
-        }
-
-        const std::string event_date=st.last_read_text.substr(0,10);
-        if(event_date>=today)continue;
-
-        std::optional<User> user;
-        std::string legacy_card;
-        if(key.rfind("U:",0)==0){
-            try{user=users_.byId(std::stoi(key.substr(2)));}catch(...){}
-        }else{
-            legacy_card=key.rfind("C:",0)==0?key.substr(2):key;
-            user=users_.byCard(legacy_card);
-        }
-
-        // Unknown cards never become Present in normal operation. If a legacy
-        // state survived without a matching user, reset it without inventing
-        // an attendance event for a non-existent employee.
-        if(!user){st.presence=PresenceState::Absent;changed=true;continue;}
-
-        AttendanceEvent e;
-        e.timestamp=st.last_read_text; // requested policy: last card use = departure
-        e.type=AttendanceEventType::Departure;
-        e.user_id=user->id;
-        e.user_name=user->last_name+" "+user->first_name;
-        if(!user->middle_name.empty())e.user_name+=" "+user->middle_name;
-        e.position=user->position;
-        e.department=user->department;
-        e.telegram_arrival=user->telegram_arrival;
-        e.telegram_departure=user->telegram_departure;
-        e.controller_name="Автозакрытие дня 00:00";
-        e.raw_hex="AUTO_MIDNIGHT_RESET|U:"+std::to_string(user->id)+"|D:"+event_date;
-
-        // Recover the physical card/controller that produced the user's latest
-        // read. CardActivity is per card, so choose the newest activity for the
-        // same user. This also works when one employee has several cards.
-        const CardActivity* latest=nullptr;
-        for(const auto&[_,a]:activities_){
-            if(a.user_id!=user->id)continue;
-            if(!latest||a.last_read>latest->last_read)latest=&a;
-        }
-        if(latest){e.card=latest->card;e.controller_node=latest->controller_node;}
-        else if(!legacy_card.empty())e.card=legacy_card;
-        else if(!user->card.empty())e.card=user->card;
-
-        // Crash-safe idempotence: if the synthetic departure was already
-        // appended but the durable state save did not finish, do not append it
-        // a second time after restart.
-        bool already_stored=false;
-        const auto prior=store_.loadAttendanceEventsByDate(event_date);
-        for(const auto&x:prior){
-            if(x.type==AttendanceEventType::Departure&&x.user_id==e.user_id&&
-               x.timestamp==e.timestamp&&x.raw_hex==e.raw_hex){already_stored=true;break;}
-        }
-        if(!already_stored&&!store_.appendEvent(e)){all_ok=false;continue;}
-
-        st.presence=PresenceState::Absent;
-        changed=true;
-        for(auto&[_,a]:activities_){
-            if(a.user_id==user->id){
-                a.last_event="Уход (автосброс 00:00)";
-                // Keep a.last_read unchanged: it must remain the real last
-                // physical card-use time that was used as departure.
-            }
-        }
+        bool changed=false;
+        if(!closePresentStateBeforeDateLocked(key,st,today,changed))all_ok=false;
+        any_changed=any_changed||changed;
     }
 
-    if(changed)persistLocked();
+    if(any_changed)persistLocked();
     return all_ok;
 }
 

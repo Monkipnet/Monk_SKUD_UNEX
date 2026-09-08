@@ -36,6 +36,7 @@ public:
 private:
     struct State { PresenceState presence{PresenceState::Absent}; std::chrono::system_clock::time_point last_read{}; bool has_last{false}; std::string last_read_text; };
     static std::chrono::system_clock::time_point parseTime(const std::string& s, bool& ok);
+    bool closePresentStateBeforeDateLocked(const std::string& key, State& state, const std::string& boundary_date, bool& changed);
     void persistLocked();
     UserManager& users_;
     FileStore& store_;
