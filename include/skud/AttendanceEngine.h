@@ -29,6 +29,10 @@ public:
     std::vector<DailyAttendance> todayAttendance() const;
     void refreshUserMetadata();
     bool resetSiteActivity();
+    // At the first tick of a new local day, close every user still marked
+    // present. The synthetic departure uses the last real card-read timestamp
+    // from the previous day, then resets durable presence to Absent.
+    bool processMidnightRollover();
 private:
     struct State { PresenceState presence{PresenceState::Absent}; std::chrono::system_clock::time_point last_read{}; bool has_last{false}; std::string last_read_text; };
     static std::chrono::system_clock::time_point parseTime(const std::string& s, bool& ok);

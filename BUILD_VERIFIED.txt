@@ -230,3 +230,13 @@ v0.3.40 MAG250 compact 20-row layout checks:
 - 18+ employee height-budget fitting enabled.
 - Active rows remain larger than left/absent/disabled rows.
 - Auto-scroll remains disabled.
+
+
+v0.3.41 midnight attendance rollover checks:
+- Project version: 0.3.41.
+- Present states from previous local dates are reset to Absent.
+- Synthetic departure timestamp equals persisted last real card-read time.
+- Synthetic departure is stored under the previous event date.
+- No notifier call is made for automatic midnight departure.
+- Duplicate synthetic departure is detected on restart before append.
+- Startup calls rollover once before service threads; runtime loop checks once per second.

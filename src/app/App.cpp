@@ -54,6 +54,6 @@ bool App::init(){
     web_=std::make_unique<WebServer>(*cfg_,*users_,*departments_,*attendance_,*controllers_,*telegram_,*reports_,root_);
     return true;
 }
-bool App::run(){if(!cfg_&&!init())return false;telegram_->start();reports_->start();controllers_->start();if(!web_->start()){std::cerr<<"Cannot start web server on port "<<cfg_->getInt("server.port",8080)<<"\n";controllers_->stop();reports_->stop();telegram_->stop();return false;}running_=true;std::cout<<"Monk_SKUD_UNEX started. Web: http://0.0.0.0:"<<cfg_->getInt("server.port",8080)<<" default login admin/admin\n";while(running_)std::this_thread::sleep_for(std::chrono::seconds(1));return true;}
+bool App::run(){if(!cfg_&&!init())return false;attendance_->processMidnightRollover();telegram_->start();reports_->start();controllers_->start();if(!web_->start()){std::cerr<<"Cannot start web server on port "<<cfg_->getInt("server.port",8080)<<"\n";controllers_->stop();reports_->stop();telegram_->stop();return false;}running_=true;std::cout<<"Monk_SKUD_UNEX started. Web: http://0.0.0.0:"<<cfg_->getInt("server.port",8080)<<" default login admin/admin\n";while(running_){attendance_->processMidnightRollover();std::this_thread::sleep_for(std::chrono::seconds(1));}return true;}
 void App::stop(){if(!running_&& !web_)return;running_=false;if(web_)web_->stop();if(reports_)reports_->stop();if(controllers_)controllers_->stop();if(telegram_)telegram_->stop();}
 }
