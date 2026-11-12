@@ -139,6 +139,22 @@ bool MariaDbUserStore::loadEventsByDate(const std::string& date,std::vector<Atte
     std::lock_guard lk(mu_);if(!connectLocked(error))return false;auto*c=static_cast<MYSQL*>(conn_);const auto prefix=escLocked(date)+"%";std::string q="SELECT timestamp,type,card,user_id,user_name,department,controller_node,controller_name,raw_hex FROM skud_attendance_events WHERE timestamp LIKE '"+prefix+"' ORDER BY timestamp,id";if(mysql_query(c,q.c_str())!=0){error=mysql_error(c);return false;}auto*res=mysql_store_result(c);if(!res){error=mysql_error(c);return false;}out.clear();MYSQL_ROW r;while((r=mysql_fetch_row(res))){AttendanceEvent e;e.timestamp=nullable(r[0]);e.type=eventTypeFromText(nullable(r[1]));e.card=nullable(r[2]);e.user_id=toInt(r[3]);e.user_name=nullable(r[4]);e.department=nullable(r[5]);e.controller_node=toInt(r[6]);e.controller_name=nullable(r[7]);e.raw_hex=nullable(r[8]);out.push_back(std::move(e));}mysql_free_result(res);return true;
 }
 
+bool MariaDbUserStore::loadAttendanceDates(std::vector<std::string>& out,std::string& error){
+    std::lock_guard lk(mu_);
+    if(!connectLocked(error))return false;
+    auto*c=static_cast<MYSQL*>(conn_);
+    const char*q="SELECT DISTINCT LEFT(timestamp,10) AS event_date FROM skud_attendance_events WHERE type IN ('arrival','departure') AND CHAR_LENGTH(timestamp)>=10 ORDER BY event_date";
+    if(mysql_query(c,q)!=0){error=mysql_error(c);return false;}
+    auto*res=mysql_store_result(c);if(!res){error=mysql_error(c);return false;}
+    out.clear();MYSQL_ROW r;
+    while((r=mysql_fetch_row(res))){
+        const std::string date=nullable(r[0]);
+        if(date.size()==10&&date[4]=='-'&&date[7]=='-')out.push_back(date);
+    }
+    mysql_free_result(res);
+    return true;
+}
+
 bool MariaDbUserStore::loadCardStates(std::map<std::string,PersistedCardState>& out,std::string& error){
     std::lock_guard lk(mu_);if(!connectLocked(error))return false;auto*c=static_cast<MYSQL*>(conn_);if(mysql_query(c,"SELECT state_key,state,last_read FROM skud_attendance_state ORDER BY state_key")!=0){error=mysql_error(c);return false;}auto*res=mysql_store_result(c);if(!res){error=mysql_error(c);return false;}out.clear();MYSQL_ROW r;while((r=mysql_fetch_row(res)))out[nullable(r[0])]={nullable(r[1])=="present"?PresenceState::Present:PresenceState::Absent,nullable(r[2])};mysql_free_result(res);return true;
 }
