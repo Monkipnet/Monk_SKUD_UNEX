@@ -68,6 +68,7 @@ public:
 
 private:
     void schedulerLoop();
+    bool syncArchive(std::string& error);
     bool scheduledRange(const std::string& period, ReportRange& range, std::string& error) const;
     bool isScheduleDue(const ReportSchedule& s, std::string& trigger_key) const;
 
