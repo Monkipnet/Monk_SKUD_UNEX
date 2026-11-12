@@ -128,6 +128,53 @@ bool validTimeOfDay(const std::string& value, int& hour, int& minute) {
     return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
 }
 
+std::string reportMonthFolder(const std::string& date) {
+    static const char* kMonths[] = {
+        "", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+        "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
+    };
+    if (date.size() < 7) return "Неизвестный-месяц";
+    int month = 0;
+    try { month = std::stoi(date.substr(5, 2)); } catch (...) { month = 0; }
+    if (month < 1 || month > 12) return "Неизвестный-месяц";
+    std::ostringstream out;
+    out << std::setw(2) << std::setfill('0') << month << "-" << kMonths[month];
+    return out.str();
+}
+
+bool saveDailyArchiveFile(const std::string& archive_root, const std::string& date,
+                          const std::string& content, std::string& error) {
+    if (archive_root.empty()) {
+        error = "Не задан путь папки архива дневных отчетов";
+        return false;
+    }
+    if (date.size() != 10) {
+        error = "Неверная дата для архива отчета: " + date;
+        return false;
+    }
+
+    std::error_code ec;
+    const auto dir = std::filesystem::path(archive_root) / date.substr(0, 4) / reportMonthFolder(date);
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        error = "Не удалось создать папку архива " + dir.string() + ": " + ec.message();
+        return false;
+    }
+
+    const auto path = dir / (date + ".txt");
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        error = "Не удалось открыть файл архива: " + path.string();
+        return false;
+    }
+    out << content;
+    if (!out) {
+        error = "Ошибка записи файла архива: " + path.string();
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 ReportManager::ReportManager(Config& cfg, FileStore& store, UserManager& users, AttendanceEngine& attendance,
@@ -455,7 +502,11 @@ bool ReportManager::sendToTelegram(const std::string& from, const std::string& t
         if (i + 1 < retries) std::this_thread::sleep_for(std::chrono::seconds(2));
     }
     if (!document_sent) return false;
-    if (!cfg_.getBool("telegram.report_text_copy", true)) return true;
+
+    const bool text_copy = cfg_.getBool("telegram.report_text_copy", true);
+    const bool archive_enabled = cfg_.getBool("reports.archive.enabled", false);
+    const std::string archive_root = cfg_.get("reports.archive.path", "/srv/samba/UNEX");
+    if (!text_copy && !archive_enabled) return true;
 
     const auto all_users = users_.list();
     const int total_users = static_cast<int>(all_users.size());
@@ -467,12 +518,12 @@ bool ReportManager::sendToTelegram(const std::string& from, const std::string& t
     std::tm from_tm{}, to_tm{};
     std::time_t from_t{}, to_t{};
     if (!parseDate(from, from_tm, from_t) || !parseDate(to, to_tm, to_t)) {
-        error = "TXT отправлен, но не удалось подготовить таблицу Telegram";
+        error = "TXT отправлен, но не удалось подготовить таблицу отчета";
         return false;
     }
 
     std::vector<std::string> messages;
-    {
+    if (text_copy) {
         std::ostringstream summary;
         summary << "<b>📋 ОТЧЕТ ПО ПОСЕЩАЕМОСТИ</b>\n"
                 << "Период: <b>" << htmlEscape(from) << " — " << htmlEscape(to) << "</b>\n"
@@ -481,17 +532,29 @@ bool ReportManager::sendToTelegram(const std::string& from, const std::string& t
         messages.push_back(summary.str());
     }
 
-    // Keep the original v0.3.29 Telegram layout: one monospace <pre> table
-    // with coloured status marks inside the rows.  The only alignment change is
-    // that the header and data rows use widths calculated from the actual rows
-    // for that day, so every heading starts over the same column as its data.
+    // Telegram and local archive use the same calculated widths and the same
+    // plain-text rows, so the saved daily report mirrors the table sent to chat.
     constexpr std::size_t kTelegramChunkLimit = 3300;
     for (auto t = from_t; t <= to_t; t = shiftDays(t, 1)) {
         const auto date = formatDate(t);
         auto rows = store_.loadDailyAttendance(date);
         const std::string day_header = "<b>" + htmlEscape(date) + "</b>\n";
+
+        std::ostringstream archive_day;
+        archive_day << "Monk SKUD UNEX\n"
+                    << "ОТЧЕТ ПО ПОСЕЩАЕМОСТИ\n"
+                    << "Дата: " << date << "\n"
+                    << "Сформирован: " << util::nowLocal() << "\n"
+                    << "Всего работников: " << total_users << "\n"
+                    << "Сейчас на объекте: " << on_site << "\n\n";
+
         if (rows.empty()) {
-            messages.push_back(day_header + "<i>Событий посещаемости нет.</i>");
+            if (text_copy) messages.push_back(day_header + "<i>Событий посещаемости нет.</i>");
+            archive_day << "Событий посещаемости нет.\n";
+            if (archive_enabled && !saveDailyArchiveFile(archive_root, date, archive_day.str(), error)) {
+                error = "Telegram-отчет отправлен, но архив не сохранен: " + error;
+                return false;
+            }
             continue;
         }
 
@@ -527,6 +590,7 @@ bool ReportManager::sendToTelegram(const std::string& from, const std::string& t
             telegramPad("Уход", departure_width) + " │ " +
             telegramPad("Состояние", state_width) + "\n";
 
+        archive_day << table_header;
         const std::string block_prefix = day_header + "<pre>" + htmlEscape(table_header);
         std::string chunk = block_prefix;
         for (const auto& row : rows) {
@@ -543,29 +607,41 @@ bool ReportManager::sendToTelegram(const std::string& from, const std::string& t
                 telegramPad(timeOnly(row.arrival_time), arrival_width) + " │ " +
                 telegramPad(timeOnly(row.departure_time), departure_width) + " │ " +
                 telegramPad(state, state_width) + "\n";
-            const std::string row_text = htmlEscape(plain_line);
+            archive_day << plain_line;
 
-            if (chunk.size() + row_text.size() + 7 > kTelegramChunkLimit &&
-                chunk.size() > block_prefix.size()) {
-                chunk += "</pre>";
-                messages.push_back(chunk);
-                chunk = block_prefix;
+            if (text_copy) {
+                const std::string row_text = htmlEscape(plain_line);
+                if (chunk.size() + row_text.size() + 7 > kTelegramChunkLimit &&
+                    chunk.size() > block_prefix.size()) {
+                    chunk += "</pre>";
+                    messages.push_back(chunk);
+                    chunk = block_prefix;
+                }
+                chunk += row_text;
             }
-            chunk += row_text;
         }
-        chunk += "</pre>";
-        messages.push_back(chunk);
+
+        if (text_copy) {
+            chunk += "</pre>";
+            messages.push_back(chunk);
+        }
+        if (archive_enabled && !saveDailyArchiveFile(archive_root, date, archive_day.str(), error)) {
+            error = "Telegram-отчет отправлен, но архив не сохранен: " + error;
+            return false;
+        }
     }
 
-    for (const auto& message : messages) {
-        bool sent = false;
-        for (int i = 0; i < retries; ++i) {
-            if (telegram_.sendHtml(message, error)) { sent = true; break; }
-            if (i + 1 < retries) std::this_thread::sleep_for(std::chrono::seconds(2));
-        }
-        if (!sent) {
-            error = "TXT-файл отправлен, но текстовая таблица Telegram не отправлена: " + error;
-            return false;
+    if (text_copy) {
+        for (const auto& message : messages) {
+            bool sent = false;
+            for (int i = 0; i < retries; ++i) {
+                if (telegram_.sendHtml(message, error)) { sent = true; break; }
+                if (i + 1 < retries) std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
+            if (!sent) {
+                error = "TXT-файл отправлен, но текстовая таблица Telegram не отправлена: " + error;
+                return false;
+            }
         }
     }
     error.clear();

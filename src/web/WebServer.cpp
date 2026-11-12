@@ -246,6 +246,8 @@ WebServer::Res WebServer::jsonSettings(){
      <<",\"notify_arrival\":"<<(cfg_.getBool("telegram.notify_arrival",true)?"true":"false")
      <<",\"notify_departure\":"<<(cfg_.getBool("telegram.notify_departure",true)?"true":"false")
      <<",\"report_text_copy\":"<<(cfg_.getBool("telegram.report_text_copy",true)?"true":"false")
+     <<",\"report_archive_enabled\":"<<(cfg_.getBool("reports.archive.enabled",false)?"true":"false")
+     <<",\"report_archive_path\":\""<<util::jsonEscape(cfg_.get("reports.archive.path","/srv/samba/UNEX"))<<"\""
      <<",\"monitor_path\":\"/monitor.html\",\"mag250_path\":\"/mag250/\"}";
     return{200,"application/json; charset=utf-8",o.str()};
 }
@@ -709,7 +711,7 @@ WebServer::Res WebServer::route(const Req&r){
         return{200,"application/json; charset=utf-8","{\"ok\":true,\"present_count\":0}"};
     }
     if(r.path=="/api/settings"&&r.method=="GET")return jsonSettings();
-    if(r.path=="/api/settings/save"&&r.method=="POST"){auto f=util::parseForm(r.body);if(!f["username"].empty())cfg_.set("auth.username",f["username"]);if(!f["password"].empty()){auto salt=util::randomToken(16);cfg_.set("auth.salt",salt);cfg_.set("auth.password_hash",util::sha256Hex(salt+f["password"]));}if(!f["port"].empty())cfg_.set("server.port",f["port"]);if(!f["serial_device"].empty())cfg_.set("serial.device",f["serial_device"]);cfg_.set("telegram.enabled",f["telegram_enabled"]=="1"?"true":"false");cfg_.set("telegram.bot_token",f["bot_token"]);cfg_.set("telegram.chat_id",f["chat_id"]);cfg_.set("telegram.notify_arrival",f["notify_arrival"]=="1"?"true":"false");cfg_.set("telegram.notify_departure",f["notify_departure"]=="1"?"true":"false");cfg_.set("telegram.report_text_copy",f["report_text_copy"]=="1"?"true":"false");if(!cfg_.save())return{500,"application/json","{\"ok\":false,\"error\":\"save failed\"}"};return{200,"application/json","{\"ok\":true,\"restart_required\":true}"};}
+    if(r.path=="/api/settings/save"&&r.method=="POST"){auto f=util::parseForm(r.body);if(!f["username"].empty())cfg_.set("auth.username",f["username"]);if(!f["password"].empty()){auto salt=util::randomToken(16);cfg_.set("auth.salt",salt);cfg_.set("auth.password_hash",util::sha256Hex(salt+f["password"]));}if(!f["port"].empty())cfg_.set("server.port",f["port"]);if(!f["serial_device"].empty())cfg_.set("serial.device",f["serial_device"]);cfg_.set("telegram.enabled",f["telegram_enabled"]=="1"?"true":"false");cfg_.set("telegram.bot_token",f["bot_token"]);cfg_.set("telegram.chat_id",f["chat_id"]);cfg_.set("telegram.notify_arrival",f["notify_arrival"]=="1"?"true":"false");cfg_.set("telegram.notify_departure",f["notify_departure"]=="1"?"true":"false");cfg_.set("telegram.report_text_copy",f["report_text_copy"]=="1"?"true":"false");cfg_.set("reports.archive.enabled",f["report_archive_enabled"]=="1"?"true":"false");if(!f["report_archive_path"].empty())cfg_.set("reports.archive.path",f["report_archive_path"]);if(!cfg_.save())return{500,"application/json","{\"ok\":false,\"error\":\"save failed\"}"};return{200,"application/json","{\"ok\":true,\"restart_required\":true}"};}
     return{404,"application/json","{\"error\":\"not found\"}"};
 }
 }
