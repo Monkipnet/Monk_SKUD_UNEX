@@ -139,5 +139,32 @@ std::vector<DailyAttendance> FileStore::loadDailyAttendance(const std::string&da
     std::vector<DailyAttendance> out;out.reserve(by_user.size());for(auto&[_,x]:by_user)out.push_back(std::move(x));std::sort(out.begin(),out.end(),[](const DailyAttendance&a,const DailyAttendance&b){if(a.presence!=b.presence)return a.presence==PresenceState::Present;if(a.arrival_time!=b.arrival_time){if(a.arrival_time.empty())return false;if(b.arrival_time.empty())return true;return a.arrival_time<b.arrival_time;}return a.user_name<b.user_name;});return out;
 }
 
+std::vector<std::string> FileStore::attendanceDates()const{
+    std::vector<std::string> out;
+    if(usingMariaDb()){
+        if(!db_)return out;
+        std::string err;
+        if(!db_->loadAttendanceDates(out,err)){
+            std::lock_guard lk(storage_mu_);
+            storage_error_=err;
+            out.clear();
+        }
+        return out;
+    }
+    std::lock_guard lk(mu_);
+    const auto dir=std::filesystem::path(root_)/"data"/"events";
+    std::error_code ec;
+    if(!std::filesystem::exists(dir,ec))return out;
+    for(const auto&entry:std::filesystem::directory_iterator(dir,ec)){
+        if(ec)break;
+        if(!entry.is_regular_file()||entry.path().extension()!=".csv")continue;
+        const auto date=entry.path().stem().string();
+        if(date.size()==10&&date[4]=='-'&&date[7]=='-')out.push_back(date);
+    }
+    std::sort(out.begin(),out.end());
+    out.erase(std::unique(out.begin(),out.end()),out.end());
+    return out;
+}
+
 bool FileStore::backupFile(const std::string&path)const{if(!std::filesystem::exists(path))return true;std::filesystem::create_directories(root_+"/backup");auto name=std::filesystem::path(path).filename().string();std::string s=util::nowLocal();for(char&c:s)if(c==':'||c==' ')c='_';std::error_code ec;std::filesystem::copy_file(path,root_+"/backup/"+s+"_"+name,std::filesystem::copy_options::overwrite_existing,ec);return !ec;}
 }
