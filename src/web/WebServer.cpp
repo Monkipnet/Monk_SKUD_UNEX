@@ -246,7 +246,7 @@ WebServer::Res WebServer::jsonSettings(){
      <<",\"notify_arrival\":"<<(cfg_.getBool("telegram.notify_arrival",true)?"true":"false")
      <<",\"notify_departure\":"<<(cfg_.getBool("telegram.notify_departure",true)?"true":"false")
      <<",\"report_text_copy\":"<<(cfg_.getBool("telegram.report_text_copy",true)?"true":"false")
-     <<",\"report_archive_enabled\":"<<(cfg_.getBool("reports.archive.enabled",false)?"true":"false")
+     <<",\"report_archive_enabled\":"<<(cfg_.getBool("reports.archive.enabled",true)?"true":"false")
      <<",\"report_archive_path\":\""<<util::jsonEscape(cfg_.get("reports.archive.path","/srv/samba/UNEX"))<<"\""
      <<",\"monitor_path\":\"/monitor.html\",\"mag250_path\":\"/mag250/\"}";
     return{200,"application/json; charset=utf-8",o.str()};
