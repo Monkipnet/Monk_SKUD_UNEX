@@ -24,6 +24,7 @@ public:
     // Used by extended attendance reports to preserve every arrival/departure.
     std::vector<AttendanceEvent> loadAttendanceEventsByDate(const std::string& date) const;
     std::vector<DailyAttendance> loadDailyAttendance(const std::string& date) const;
+    std::vector<std::string> attendanceDates() const;
     bool backupFile(const std::string& path) const;
     bool usingMariaDb() const;
     std::string storageError() const;
