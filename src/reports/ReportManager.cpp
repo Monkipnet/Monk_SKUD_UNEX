@@ -142,6 +142,10 @@ std::string reportMonthFolder(const std::string& date) {
     return out.str();
 }
 
+std::filesystem::path dailyArchiveFilePath(const std::string& archive_root, const std::string& date) {
+    return std::filesystem::path(archive_root) / date.substr(0, 4) / reportMonthFolder(date) / (date + ".txt");
+}
+
 bool saveDailyArchiveFile(const std::string& archive_root, const std::string& date,
                           const std::string& content, std::string& error) {
     if (archive_root.empty()) {
@@ -154,14 +158,14 @@ bool saveDailyArchiveFile(const std::string& archive_root, const std::string& da
     }
 
     std::error_code ec;
-    const auto dir = std::filesystem::path(archive_root) / date.substr(0, 4) / reportMonthFolder(date);
+    const auto path = dailyArchiveFilePath(archive_root, date);
+    const auto dir = path.parent_path();
     std::filesystem::create_directories(dir, ec);
     if (ec) {
         error = "Не удалось создать папку архива " + dir.string() + ": " + ec.message();
         return false;
     }
 
-    const auto path = dir / (date + ".txt");
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {
         error = "Не удалось открыть файл архива: " + path.string();
@@ -504,7 +508,7 @@ bool ReportManager::sendToTelegram(const std::string& from, const std::string& t
     if (!document_sent) return false;
 
     const bool text_copy = cfg_.getBool("telegram.report_text_copy", true);
-    const bool archive_enabled = cfg_.getBool("reports.archive.enabled", false);
+    const bool archive_enabled = cfg_.getBool("reports.archive.enabled", true);
     const std::string archive_root = cfg_.get("reports.archive.path", "/srv/samba/UNEX");
     if (!text_copy && !archive_enabled) return true;
 
@@ -764,8 +768,68 @@ bool ReportManager::isScheduleDue(const ReportSchedule& s, std::string& trigger_
     return true;
 }
 
+bool ReportManager::syncArchive(std::string& error) {
+    if (!cfg_.getBool("reports.archive.enabled", true)) {
+        error.clear();
+        return true;
+    }
+
+    const std::string archive_root = cfg_.get("reports.archive.path", "/srv/samba/UNEX");
+    const auto dates = store_.attendanceDates();
+    int changed = 0;
+
+    for (const auto& date : dates) {
+        if (!running_) {
+            error.clear();
+            return true;
+        }
+
+        AttendanceReport report;
+        if (!build(date, date, report, error)) return false;
+
+        const auto target = dailyArchiveFilePath(archive_root, date);
+        std::error_code ec;
+        bool rewrite = true;
+        if (std::filesystem::exists(target, ec) && !ec) {
+            const auto current_size = std::filesystem::file_size(target, ec);
+            if (!ec && current_size == report.content.size()) rewrite = false;
+        }
+        if (rewrite) {
+            if (!saveDailyArchiveFile(archive_root, date, report.content, error)) return false;
+            ++changed;
+        }
+    }
+
+    cfg_.set("reports.archive.last_sync_at", util::nowLocal());
+    cfg_.set("reports.archive.last_sync_status", "ok");
+    cfg_.set("reports.archive.last_sync_files", std::to_string(dates.size()));
+    cfg_.set("reports.archive.last_sync_changed", std::to_string(changed));
+    cfg_.set("reports.archive.last_sync_error", "");
+    cfg_.save();
+    error.clear();
+    return true;
+}
+
 void ReportManager::schedulerLoop() {
+    auto last_archive_sync = std::chrono::steady_clock::time_point{};
     while (running_) {
+        const int sync_minutes = std::max(1, cfg_.getInt("reports.archive.sync_interval_minutes", 60));
+        const auto now_steady = std::chrono::steady_clock::now();
+        if (cfg_.getBool("reports.archive.enabled", true) &&
+            (last_archive_sync.time_since_epoch().count() == 0 ||
+             now_steady - last_archive_sync >= std::chrono::minutes(sync_minutes))) {
+            std::string sync_error;
+            cfg_.set("reports.archive.last_sync_status", "running");
+            cfg_.set("reports.archive.last_sync_error", "");
+            cfg_.save();
+            if (!syncArchive(sync_error)) {
+                cfg_.set("reports.archive.last_sync_status", "error");
+                cfg_.set("reports.archive.last_sync_error", sync_error);
+                cfg_.save();
+            }
+            last_archive_sync = now_steady;
+        }
+
         const auto s = schedule();
         std::string trigger_key;
         if (isScheduleDue(s, trigger_key)) {
